@@ -1,0 +1,20 @@
+name: daily filter
+on:
+  schedule: [{cron: "0 8 * * *"}]   # 08:00 UTC daily — change to taste
+  workflow_dispatch: {}             # manual "Run workflow" button
+permissions: {contents: write}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install requests
+      - run: python filter.py
+        env: {APIFOOTBALL_KEY: "${{ secrets.APIFOOTBALL_KEY }}"}
+      - run: |
+          git config user.name filter-bot
+          git config user.email bot@local
+          git add docs/index.html
+          git diff --cached --quiet || (git commit -m "report" && git push)
