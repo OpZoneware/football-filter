@@ -1,4 +1,4 @@
-import os, math, json, datetime, requests
+import os, math, datetime, requests
 
 KEY = os.environ["APIFOOTBALL_KEY"]
 H = "https://v3.football.api-sports.io"
@@ -32,24 +32,35 @@ def form_pts(s): return 3*s.count("W")+s.count("D")
 
 def main():
     today = datetime.date.today().isoformat()
-    season = datetime.date.today().year
+    year = datetime.date.today().year
     fixtures = [f for f in get("/fixtures", date=today)
                 if f["league"]["id"] in LEAGUES and f["fixture"]["status"]["short"]=="NS"]
     fixtures = fixtures[:MAX_FIXTURES]
+    
     tables = {}
     for lid in {f["league"]["id"] for f in fixtures}:
-        try:
-            st = get("/standings", league=lid, season=season)[0]["league"]["standings"]
-            tables[lid] = {t["team"]["id"]: t for t in st[0]}
-        except Exception: tables[lid] = {}
+        st_data = {}
+        # Smart Season Checker: Tries current year, then falls back to previous year
+        for s in [year, year-1]:  
+            try:
+                st = get("/standings", league=lid, season=s)[0]["league"]["standings"]
+                if st and len(st[0]) > 0:
+                    st_data = {t["team"]["id"]: t for t in st[0]}
+                    break
+            except Exception: pass
+        tables[lid] = st_data
+
     picks, close, rejected = [], [], []
     for f in fixtures:
         fid = f["fixture"]["id"]; lt = f["league"]["id"]
         th, ta = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
         sh, sa = tables.get(lt,{}).get(th), tables.get(lt,{}).get(ta)
         name = f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}"
-        if not sh or not sa or sh["all"]["played"]<3 or sa["all"]["played"]<3:
+        
+        # Lowered from <3 to <2 to allow early season matches
+        if not sh or not sa or sh["all"]["played"]<2 or sa["all"]["played"]<2:
             rejected.append((name,"Matchday-1/insufficient current-season data")); continue
+            
         # injuries -> lineup gate
         try: inj = get("/injuries", fixture=fid); news = bool(inj)
         except Exception: inj, news = [], False
@@ -60,6 +71,7 @@ def main():
         avh, ava = avail(th), avail(ta)
         if min(avh,ava) <= 60:
             rejected.append((name,f"lineup gate: availability {avh}/{ava}")); continue
+            
         # expected goals from season gf/ga, nudged by last-5 form
         gh, ga = sh["all"]["goals"]["for"]/sh["all"]["played"], sh["all"]["goals"]["against"]/sh["all"]["played"]
         ah, aa = sa["all"]["goals"]["for"]/sa["all"]["played"], sa["all"]["goals"]["against"]/sa["all"]["played"]
@@ -70,6 +82,7 @@ def main():
         p_ov = 1-sum(pois(lh+la,k) for k in (0,1,2))
         p_btts = (1-pois(lh,0))*(1-pois(la,0))
         p_h2 = sum(pois(lh,i)*sum(pois(la,j) for j in range(i-1)) for i in range(2,9))  # home -1.5
+        
         # odds
         try: bk = get("/odds", fixture=fid)[0]["bets"]
         except Exception: bk = []
@@ -84,6 +97,7 @@ def main():
         ppg_h, ppg_a = sh["points"]/sh["all"]["played"], sa["points"]/sa["all"]["played"]
         facts = (f"ppg {ppg_h:.2f} v {ppg_a:.2f}; form {sh['form']} v {sa['form']}; "
                  f"rank {sh['rank']} v {sa['rank']}; avail {avh}/{ava}")
+                 
         for mkt, est, o in [("Home win",ph,o_h),("Over 2.5",p_ov,o_ov),
                             ("BTTS Yes",p_btts,o_b),("Home -1.5",p_h2,o_h2)]:
             if o is None: continue
@@ -91,6 +105,7 @@ def main():
             row = (LEAGUES[lt], name, mkt, o, est, imp, edge, facts)
             if edge >= EDGE_MIN: picks.append(row)
             elif edge >= 0.02: close.append(row)
+            
     write_page(picks, close, rejected, today)
 
 def write_page(picks, close, rejected, today):
